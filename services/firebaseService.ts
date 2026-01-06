@@ -12,7 +12,7 @@ import {
   updateDoc,
   Timestamp
 } from "firebase/firestore";
-import { AttendanceRecord, UserProfile } from "../types";
+import { AttendanceRecord, UserProfile, WeeklyPlan } from "../types";
 
 // --- USERS ---
 
@@ -95,5 +95,36 @@ export const fetchUserLogs = async (userId: string): Promise<AttendanceRecord[]>
   } catch (error) {
     console.error("Error fetching logs:", error);
     return [];
+  }
+};
+
+// --- PLANS ---
+
+export const fetchPlans = async (startDate: string, endDate: string): Promise<WeeklyPlan[]> => {
+  try {
+    // In a real app, use where('date', '>=', startDate) etc.
+    // keeping it simple for now, limit to recent 50
+    const q = query(
+        collection(db, "plans"),
+        limit(50)
+    );
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    } as WeeklyPlan));
+  } catch (error) {
+    console.error("Error fetching plans:", error);
+    return [];
+  }
+};
+
+export const createPlan = async (plan: Partial<WeeklyPlan>): Promise<WeeklyPlan | null> => {
+  try {
+    const docRef = await addDoc(collection(db, "plans"), plan);
+    return { id: docRef.id, ...plan } as WeeklyPlan;
+  } catch (error) {
+    console.error("Error creating plan:", error);
+    return null;
   }
 };

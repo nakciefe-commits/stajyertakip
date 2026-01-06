@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
+import { CalendarView } from './components/CalendarView';
+import { BottomNav } from './components/BottomNav';
 import { UserProfile, AttendanceRecord } from './types';
 import { fetchAllUsers, createUserProfile, logAction, fetchUserLogs } from './services/firebaseService';
 import { getAttendanceInsight, generatePythonAnalysisCode } from './services/geminiService';
@@ -16,14 +18,24 @@ import {
   Briefcase,
   UserCheck,
   ChevronRight,
+  ChevronLeft,
   RefreshCw,
   LayoutDashboard,
-  WifiOff
+  WifiOff,
+  AlertTriangle,
+  MapPin,
+  CalendarCheck
 } from 'lucide-react';
 
 const App: React.FC = () => {
   // --- View States ---
-  const [view, setView] = useState<'dashboard' | 'select-user' | 'register' | 'intern-panel'>('dashboard');
+  // Main tabs: 'dashboard' (Genel), 'calendar' (Planlar), 'profile' (Profilim)
+  // Sub-views are handled within render logic
+  const [mainTab, setMainTab] = useState<'dashboard' | 'calendar' | 'profile'>('dashboard');
+  
+  // 'select-user' and 'register' are sub-states of the 'profile' tab context effectively,
+  // but we keep them distinct for the flow.
+  const [subView, setSubView] = useState<'none' | 'register'>('none');
   
   // --- Data States ---
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -31,9 +43,9 @@ const App: React.FC = () => {
   const [logs, setLogs] = useState<AttendanceRecord[]>([]);
   
   // --- UI Loading States ---
-  const [loading, setLoading] = useState(true); // Initial load is true
+  const [loading, setLoading] = useState(true); 
   const [actionLoading, setActionLoading] = useState(false);
-  const [networkError, setNetworkError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // --- Registration State ---
   const [newProfile, setNewProfile] = useState<Partial<UserProfile>>({
@@ -46,42 +58,43 @@ const App: React.FC = () => {
   const [pythonCode, setPythonCode] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
 
-  // Initial Data Load with Anonymous Auth
+  // Initial Data Load
   useEffect(() => {
-    const initApp = async () => {
-      try {
-        // 1. Authenticate anonymously first (Prevents Firestore hanging)
-        await signInAnonymously(auth);
-        
-        // 2. Then load data
-        await loadUsers();
-      } catch (error) {
-        console.error("Initialization error:", error);
-        setNetworkError(true);
-        setLoading(false);
-      }
-    };
     initApp();
   }, []);
 
-  const loadUsers = async () => {
+  const initApp = async () => {
     setLoading(true);
-    setNetworkError(false);
+    setErrorMessage(null);
     try {
-      const data = await fetchAllUsers();
-      setUsers(data);
-    } catch (e) {
-      console.error("Load users error:", e);
-      setNetworkError(true);
+      if (!auth.currentUser) {
+         await signInAnonymously(auth);
+      }
+      await loadUsers();
+    } catch (error: any) {
+      console.error("Initialization error:", error);
+      let msg = "Bağlantı hatası oluştu.";
+      if (error.code === 'auth/operation-not-allowed') msg = "HATA: Firebase Anonymous Auth kapalı.";
+      else if (error.code === 'permission-denied') msg = "HATA: Firestore izin hatası.";
+      else if (error.message) msg = `Hata: ${error.message}`;
+      setErrorMessage(msg);
     } finally {
       setLoading(false);
     }
   };
 
+  const loadUsers = async () => {
+    try {
+      const data = await fetchAllUsers();
+      setUsers(data);
+    } catch (e) {
+      console.error("Load users error:", e);
+      throw e; 
+    }
+  };
+
   const handleUserSelect = async (user: UserProfile) => {
     setCurrentUser(user);
-    setView('intern-panel');
-    // Don't await this, let it load in background for speed
     loadUserLogs(user.id);
   };
 
@@ -93,26 +106,37 @@ const App: React.FC = () => {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newProfile.firstName || !newProfile.lastName) return;
+    
     setActionLoading(true);
-    const created = await createUserProfile(newProfile);
-    if (created) {
-      setUsers(prev => [...prev, created]);
-      setCurrentUser(created);
-      setView('intern-panel');
-      setNewProfile({ role: 'Stajyer', department: 'Yazılım' });
+    setErrorMessage(null);
+
+    try {
+        if (!auth.currentUser) await signInAnonymously(auth);
+
+        const created = await createUserProfile(newProfile);
+        
+        if (created) {
+            setUsers(prev => [...prev, created]);
+            setCurrentUser(created);
+            setSubView('none');
+            setNewProfile({ role: 'Stajyer', department: 'Yazılım' });
+        } else {
+            throw new Error("Kayıt işlemi veritabanı tarafından reddedildi.");
+        }
+    } catch (error: any) {
+        setErrorMessage(error.message || "Kayıt hatası.");
+    } finally {
+        setActionLoading(false);
     }
-    setActionLoading(false);
   };
 
   const handleAttendance = async (type: 'Giriş' | 'Çıkış') => {
     if (!currentUser) return;
     setActionLoading(true);
     
-    // Optimistic Update (Immediate UI change)
     const previousStatus = currentUser.currentStatus;
     const now = new Date();
     
-    // Temporarily update UI before server responds
     setCurrentUser(prev => prev ? ({...prev, currentStatus: type}) : null);
     
     const success = await logAction(currentUser, type);
@@ -125,14 +149,11 @@ const App: React.FC = () => {
         type: type,
         timestamp: { seconds: now.getTime() / 1000 }
       };
-      
       setLogs(prev => [newLog, ...prev]);
-      // Background refresh to sync consistency
       fetchAllUsers().then(setUsers); 
     } else {
-      // Revert on failure
       setCurrentUser(prev => prev ? ({...prev, currentStatus: previousStatus}) : null);
-      alert("Bağlantı hatası, işlem kaydedilemedi.");
+      alert("İşlem kaydedilemedi.");
     }
     setActionLoading(false);
   };
@@ -160,287 +181,254 @@ const App: React.FC = () => {
     setAiLoading(false);
   };
 
-  // --- RENDER HELPERS ---
-
+  // --- Helpers ---
   const formatTime = (timestamp: any) => {
     if (!timestamp) return '-';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp.seconds * 1000);
     return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
   };
-
   const formatDate = (timestamp: any) => {
     if (!timestamp) return '-';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp.seconds * 1000);
     return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' });
   };
 
-  // --- VIEWS ---
+  // --- RENDER CONTENT BASED ON TAB ---
 
-  // 1. DASHBOARD (Manager View)
-  if (view === 'dashboard') {
-    return (
-      <div className="min-h-screen bg-slate-50 font-sans text-gray-800">
-        <Header />
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            <div className="flex justify-between items-center mb-8">
-                <div>
-                    <h2 className="text-2xl font-bold text-blue-900">Genel Durum Paneli</h2>
-                    <p className="text-gray-500 text-sm">Anlık stajyer ve aday mühendis durumları</p>
+  const renderContent = () => {
+    // 1. DASHBOARD
+    if (mainTab === 'dashboard') {
+        const insideCount = users.filter(u => u.currentStatus === 'Giriş').length;
+        
+        return (
+            <div className="pb-24">
+                <div className="flex justify-between items-center mb-6">
+                    <div>
+                        <h2 className="text-2xl font-bold text-blue-900">Genel Durum</h2>
+                        <p className="text-gray-500 text-sm">BİLTİR OTEST Ekibi</p>
+                    </div>
                 </div>
-                <button 
-                  onClick={() => setView('select-user')}
-                  className="bg-yellow-400 hover:bg-yellow-500 text-blue-900 px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition shadow-sm"
-                >
-                    <Briefcase className="w-5 h-5" />
-                    Stajyer Paneline Git
-                </button>
-            </div>
 
-            {networkError && (
-              <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-lg mb-6 flex items-center gap-2">
-                <WifiOff className="w-5 h-5" />
-                <span>Bağlantı kurulamadı. İnternetinizi kontrol edip sayfayı yenileyin.</span>
-              </div>
-            )}
+                {errorMessage && (
+                    <div className="bg-red-50 p-4 rounded-lg mb-6 flex flex-col gap-2 border border-red-200">
+                        <span className="text-red-700 font-bold flex items-center gap-2"><AlertTriangle className="w-4 h-4"/> Bağlantı Hatası</span>
+                        <p className="text-sm text-red-600">{errorMessage}</p>
+                        <button onClick={initApp} className="bg-white text-red-700 px-3 py-1 rounded border border-red-200 text-sm font-bold w-fit">Yenile</button>
+                    </div>
+                )}
 
-            {loading && users.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12 gap-3">
-                  <RefreshCw className="w-8 h-8 text-blue-900 animate-spin" />
-                  <p className="text-gray-400 text-sm">Veriler çekiliyor...</p>
-                </div>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {users.map(user => (
-                        <div key={user.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex items-center gap-4 relative overflow-hidden">
-                            <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${user.currentStatus === 'Giriş' ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
-                            
-                            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg shrink-0 ${user.avatarColor || 'bg-blue-600'}`}>
-                                {user.firstName[0]}{user.lastName[0]}
+                {/* Overall Stats Cards */}
+                <div className="grid grid-cols-2 gap-4 mb-8">
+                     <div className="bg-gradient-to-br from-blue-900 to-blue-800 rounded-2xl p-5 text-white shadow-lg relative overflow-hidden">
+                        <div className="relative z-10">
+                            <p className="text-blue-200 text-xs font-medium uppercase tracking-wider mb-1">Şu an Ofiste</p>
+                            <div className="text-4xl font-bold flex items-baseline gap-1">
+                                {insideCount} <span className="text-lg font-normal text-blue-300">kişi</span>
                             </div>
-                            
-                            <div className="flex-1 min-w-0">
-                                <h3 className="font-bold text-gray-900 truncate">{user.firstName} {user.lastName}</h3>
-                                <p className="text-xs text-gray-500 truncate">{user.department} • {user.role}</p>
-                                <div className="flex items-center gap-2 mt-1.5">
-                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                                        user.currentStatus === 'Giriş' 
-                                        ? 'bg-emerald-100 text-emerald-700' 
-                                        : 'bg-gray-100 text-gray-600'
-                                    }`}>
-                                        <span className={`w-1.5 h-1.5 rounded-full ${user.currentStatus === 'Giriş' ? 'bg-emerald-500' : 'bg-gray-400'}`}></span>
-                                        {user.currentStatus === 'Giriş' ? 'İçeride' : 'Dışarıda'}
-                                    </span>
-                                    {user.lastSeen && (
-                                        <span className="text-[10px] text-gray-400 flex items-center gap-1">
-                                            <History className="w-3 h-3" />
-                                            {formatTime(user.lastSeen)}
+                        </div>
+                        <MapPin className="absolute -bottom-2 -right-2 w-20 h-20 text-white/10" />
+                     </div>
+
+                     <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-sm relative overflow-hidden">
+                        <p className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-1">Toplam Ekip</p>
+                        <div className="text-4xl font-bold text-gray-800 flex items-baseline gap-1">
+                            {users.length} <span className="text-lg font-normal text-gray-400">kişi</span>
+                        </div>
+                        <Users className="absolute -bottom-2 -right-2 w-20 h-20 text-gray-100" />
+                     </div>
+                </div>
+
+                <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-blue-900"></div>
+                    Stajyer Listesi
+                </h3>
+
+                {loading && !errorMessage ? (
+                    <div className="flex justify-center py-12"><RefreshCw className="w-8 h-8 text-blue-900 animate-spin" /></div>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {users.map(user => (
+                            <div key={user.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex items-center gap-4 relative overflow-hidden">
+                                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${user.currentStatus === 'Giriş' ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
+                                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0 ${user.avatarColor || 'bg-blue-600'}`}>
+                                    {user.firstName[0]}{user.lastName[0]}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <h3 className="font-bold text-gray-900 truncate text-sm">{user.firstName} {user.lastName}</h3>
+                                    <p className="text-[10px] text-gray-500 truncate">{user.role}</p>
+                                    <div className="flex items-center gap-2 mt-1">
+                                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                            user.currentStatus === 'Giriş' 
+                                            ? 'bg-emerald-50 text-emerald-700' 
+                                            : 'bg-gray-50 text-gray-500'
+                                        }`}>
+                                            <div className={`w-1 h-1 rounded-full ${user.currentStatus === 'Giriş' ? 'bg-emerald-500' : 'bg-gray-400'}`}></div>
+                                            {user.currentStatus === 'Giriş' ? 'İçeride' : 'Dışarıda'}
                                         </span>
-                                    )}
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                    ))}
-                    {users.length === 0 && !loading && (
-                        <div className="col-span-full text-center py-12 text-gray-500 bg-gray-50 rounded-lg border-2 border-dashed">
-                            Henüz kayıtlı stajyer yok. Stajyer Paneline gidip kayıt olabilirsiniz.
-                        </div>
-                    )}
-                </div>
-            )}
-        </main>
-      </div>
-    );
-  }
-
-  // 2. USER SELECTION (Login)
-  if (view === 'select-user') {
-    return (
-        <div className="min-h-screen bg-slate-50 font-sans text-gray-800 flex flex-col">
-          <Header onBack={() => setView('dashboard')} />
-          <div className="flex-grow flex items-center justify-center p-4">
-            <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-                <div className="bg-blue-900 p-6 text-center">
-                    <h2 className="text-xl font-bold text-white">Kimsin?</h2>
-                    <p className="text-blue-200 text-sm">İşlem yapmak için profilini seç.</p>
-                </div>
-                <div className="p-6">
-                    {loading && users.length === 0 ? (
-                       <div className="flex justify-center py-8"><RefreshCw className="w-6 h-6 animate-spin text-blue-900" /></div>
-                    ) : (
-                      <div className="max-h-80 overflow-y-auto space-y-2 pr-1 custom-scrollbar mb-4">
-                          {users.map(user => (
-                              <button
-                                  key={user.id}
-                                  onClick={() => handleUserSelect(user)}
-                                  className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition group text-left"
-                              >
-                                  <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${user.avatarColor}`}>
-                                      {user.firstName[0]}{user.lastName[0]}
-                                  </div>
-                                  <div className="flex-1">
-                                      <div className="font-semibold text-gray-900">{user.firstName} {user.lastName}</div>
-                                      <div className="text-xs text-gray-500">{user.role}</div>
-                                  </div>
-                                  <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-blue-500" />
-                              </button>
-                          ))}
-                      </div>
-                    )}
-                    <button 
-                        onClick={() => setView('register')}
-                        className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition flex items-center justify-center gap-2"
-                    >
-                        <UserPlus className="w-5 h-5" />
-                        Listede Yokum, Kayıt Ol
-                    </button>
-                </div>
+                        ))}
+                    </div>
+                )}
             </div>
-          </div>
-        </div>
-    );
-  }
+        );
+    }
 
-  // 3. REGISTER
-  if (view === 'register') {
-      return (
-        <div className="min-h-screen bg-slate-50 font-sans text-gray-800 flex flex-col">
-            <Header onBack={() => setView('select-user')} />
-            <div className="flex-grow flex items-center justify-center p-4">
-                <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-gray-100 p-8">
-                    <h2 className="text-xl font-bold text-gray-900 mb-6 text-center">Yeni Profil Oluştur</h2>
-                    <form onSubmit={handleRegister} className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
-                            <input className="border p-3 rounded-lg w-full outline-none focus:border-blue-500" placeholder="Ad" value={newProfile.firstName || ''} onChange={e => setNewProfile({...newProfile, firstName: e.target.value})} required />
-                            <input className="border p-3 rounded-lg w-full outline-none focus:border-blue-500" placeholder="Soyad" value={newProfile.lastName || ''} onChange={e => setNewProfile({...newProfile, lastName: e.target.value})} required />
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
+    // 2. CALENDAR
+    if (mainTab === 'calendar') {
+        return <CalendarView users={users} currentUser={currentUser} />;
+    }
+
+    // 3. PROFILE (Login/Personal Panel)
+    if (mainTab === 'profile') {
+        // 3a. Register View
+        if (subView === 'register') {
+            return (
+                <div className="pb-24">
+                     <button onClick={() => setSubView('none')} className="mb-6 flex items-center text-gray-500 hover:text-blue-900"><ChevronLeft className="w-4 h-4"/> Geri Dön</button>
+                     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                        <h2 className="text-xl font-bold text-gray-900 mb-6">Yeni Profil Oluştur</h2>
+                        <form onSubmit={handleRegister} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <input className="border p-3 rounded-lg w-full" placeholder="Ad" value={newProfile.firstName || ''} onChange={e => setNewProfile({...newProfile, firstName: e.target.value})} required />
+                                <input className="border p-3 rounded-lg w-full" placeholder="Soyad" value={newProfile.lastName || ''} onChange={e => setNewProfile({...newProfile, lastName: e.target.value})} required />
+                            </div>
                             <select className="border p-3 rounded-lg w-full bg-white" value={newProfile.role} onChange={e => setNewProfile({...newProfile, role: e.target.value as any})}>
                                 <option>Stajyer</option>
                                 <option>Aday Mühendis</option>
                             </select>
-                            <input className="border p-3 rounded-lg w-full outline-none focus:border-blue-500" placeholder="Bölüm (Örn: Ar-Ge)" value={newProfile.department || ''} onChange={e => setNewProfile({...newProfile, department: e.target.value})} />
-                        </div>
-                        <button disabled={actionLoading} type="submit" className="w-full bg-blue-900 hover:bg-blue-800 text-white font-bold py-3 rounded-xl transition mt-2 disabled:opacity-50">
-                            {actionLoading ? 'Kaydediliyor...' : 'Kaydı Tamamla'}
-                        </button>
-                        <button type="button" onClick={() => setView('select-user')} className="w-full text-gray-500 py-2 text-sm">İptal</button>
-                    </form>
+                            <input className="border p-3 rounded-lg w-full" placeholder="Bölüm (Örn: Ar-Ge)" value={newProfile.department || ''} onChange={e => setNewProfile({...newProfile, department: e.target.value})} />
+                            <button disabled={actionLoading} type="submit" className="w-full bg-blue-900 text-white font-bold py-3 rounded-xl">
+                                {actionLoading ? 'Kaydediliyor...' : 'Kaydı Tamamla'}
+                            </button>
+                        </form>
+                     </div>
                 </div>
-            </div>
-        </div>
-      );
-  }
+            );
+        }
 
-  // 4. INTERN PANEL (Personal)
-  return (
-    <div className="min-h-screen bg-slate-50 font-sans text-gray-800">
-        <Header currentUser={currentUser} onBack={() => { setCurrentUser(null); setView('dashboard'); setLogs([]); setAiInsight(''); setPythonCode(''); }} />
-        
-        <main className="max-w-md mx-auto px-4 py-8 pb-20">
-            {/* Status Card */}
-            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 mb-6 text-center">
-                <div className="mb-2 text-sm text-gray-500">Şu anki Durumun</div>
-                <div className={`text-3xl font-bold mb-6 ${currentUser?.currentStatus === 'Giriş' ? 'text-emerald-600' : 'text-gray-400'}`}>
-                    {currentUser?.currentStatus === 'Giriş' ? 'OFİSTESİN' : 'DIŞARIDASIN'}
+        // 3b. Personal Panel (If Logged In)
+        if (currentUser) {
+            return (
+                <div className="pb-24">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold text-blue-900">Panelim</h2>
+                        <button onClick={() => {setCurrentUser(null); setLogs([]);}} className="text-sm text-red-600 font-medium">Çıkış Yap</button>
+                    </div>
+
+                    <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 mb-6 text-center relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-400 to-yellow-400"></div>
+                        <div className="mb-2 text-sm text-gray-500">Durumun</div>
+                        <div className={`text-3xl font-bold mb-6 ${currentUser?.currentStatus === 'Giriş' ? 'text-emerald-600' : 'text-gray-400'}`}>
+                            {currentUser?.currentStatus === 'Giriş' ? 'OFİSTESİN' : 'DIŞARIDASIN'}
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                            <button
+                                onClick={() => handleAttendance('Giriş')}
+                                disabled={actionLoading || currentUser?.currentStatus === 'Giriş'}
+                                className={`py-4 rounded-xl flex flex-col items-center gap-2 border-2 ${currentUser?.currentStatus === 'Giriş' ? 'bg-gray-50 border-gray-100 opacity-50' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}
+                            >
+                                {actionLoading && currentUser?.currentStatus !== 'Giriş' ? <RefreshCw className="animate-spin"/> : <LogIn />}
+                                <span className="font-bold">Giriş Yap</span>
+                            </button>
+                            <button
+                                onClick={() => handleAttendance('Çıkış')}
+                                disabled={actionLoading || currentUser?.currentStatus !== 'Giriş'}
+                                className={`py-4 rounded-xl flex flex-col items-center gap-2 border-2 ${currentUser?.currentStatus !== 'Giriş' ? 'bg-gray-50 border-gray-100 opacity-50' : 'bg-red-50 border-red-100 text-red-700'}`}
+                            >
+                                {actionLoading && currentUser?.currentStatus === 'Giriş' ? <RefreshCw className="animate-spin"/> : <LogOut />}
+                                <span className="font-bold">Çıkış Yap</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="bg-indigo-600 rounded-xl p-5 text-white mb-6 shadow-md relative overflow-hidden">
+                        <h3 className="font-bold flex items-center gap-2 mb-2 relative z-10">
+                            <Sparkles className="w-5 h-5 text-yellow-300" /> AI Mentör
+                        </h3>
+                        <div className="flex gap-2 relative z-10">
+                            <button onClick={() => handleGenerateAi('insight')} disabled={aiLoading} className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded text-xs font-medium backdrop-blur-sm">
+                                {aiLoading ? '...' : 'Durumumu Yorumla'}
+                            </button>
+                            <button onClick={() => handleGenerateAi('python')} disabled={aiLoading} className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded text-xs font-medium backdrop-blur-sm flex items-center gap-1">
+                                <Code className="w-3 h-3" /> Python Kodu
+                            </button>
+                        </div>
+                        {aiInsight && <div className="mt-3 text-xs bg-black/20 p-3 rounded leading-relaxed relative z-10">{aiInsight}</div>}
+                        {pythonCode && (
+                            <div className="mt-3 relative z-10">
+                                <pre className="text-[10px] bg-black/40 p-2 rounded overflow-x-auto max-h-32 text-green-300 font-mono">{pythonCode}</pre>
+                            </div>
+                        )}
+                        <Sparkles className="absolute -bottom-6 -right-6 w-32 h-32 text-white/10" />
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div className="bg-gray-50 px-4 py-3 border-b border-gray-200"><h3 className="font-bold text-gray-700 text-sm">Son Hareketler</h3></div>
+                        <div className="divide-y divide-gray-100">
+                            {logs.map(log => (
+                                <div key={log.id} className="p-4 flex justify-between items-center">
+                                    <div>
+                                        <div className={`text-sm font-bold ${log.type === 'Giriş' ? 'text-emerald-700' : 'text-red-600'}`}>{log.type.toUpperCase()}</div>
+                                        <div className="text-xs text-gray-400">{formatDate(log.timestamp)}</div>
+                                    </div>
+                                    <div className="font-mono text-gray-600">{formatTime(log.timestamp)}</div>
+                                </div>
+                            ))}
+                            {logs.length === 0 && <div className="p-6 text-center text-gray-400 text-sm">Henüz kayıt yok.</div>}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // 3c. Login List (Default Profile View)
+        return (
+            <div className="pb-24">
+                <div className="bg-blue-900 rounded-2xl p-6 text-center mb-6 shadow-lg">
+                    <h2 className="text-xl font-bold text-white mb-1">Hoş Geldin!</h2>
+                    <p className="text-blue-200 text-sm">İşlem yapmak için profilini seç.</p>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4">
-                    <button
-                        onClick={() => handleAttendance('Giriş')}
-                        disabled={actionLoading || currentUser?.currentStatus === 'Giriş'}
-                        className={`py-4 rounded-xl flex flex-col items-center justify-center gap-2 transition border-2 ${
-                            currentUser?.currentStatus === 'Giriş' 
-                            ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' 
-                            : 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300 shadow-sm'
-                        }`}
-                    >
-                        {actionLoading && currentUser?.currentStatus !== 'Giriş' ? <RefreshCw className="w-8 h-8 animate-spin" /> : <LogIn className="w-8 h-8" />}
-                        <span className="font-bold">Giriş Yap</span>
-                    </button>
-
-                    <button
-                        onClick={() => handleAttendance('Çıkış')}
-                        disabled={actionLoading || currentUser?.currentStatus !== 'Giriş'}
-                        className={`py-4 rounded-xl flex flex-col items-center justify-center gap-2 transition border-2 ${
-                            currentUser?.currentStatus !== 'Giriş' 
-                            ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' 
-                            : 'bg-red-50 border-red-100 text-red-700 hover:bg-red-100 hover:border-red-300 shadow-sm'
-                        }`}
-                    >
-                         {actionLoading && currentUser?.currentStatus === 'Giriş' ? <RefreshCw className="w-8 h-8 animate-spin" /> : <LogOut className="w-8 h-8" />}
-                        <span className="font-bold">Çıkış Yap</span>
-                    </button>
-                </div>
-            </div>
-
-            {/* AI Assistant Mini */}
-            <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl p-5 text-white mb-6 shadow-md relative overflow-hidden">
-                <div className="relative z-10">
-                    <h3 className="font-bold flex items-center gap-2 mb-2">
-                        <Sparkles className="w-5 h-5 text-yellow-300" />
-                        AI Mentör
-                    </h3>
-                    <div className="flex gap-2 text-sm">
-                        <button 
-                            onClick={() => handleGenerateAi('insight')}
-                            disabled={aiLoading}
-                            className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg transition text-xs font-medium"
+                <div className="space-y-3 mb-6">
+                    {users.map(user => (
+                        <button
+                            key={user.id}
+                            onClick={() => handleUserSelect(user)}
+                            className="w-full flex items-center gap-3 p-3 rounded-xl bg-white border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition shadow-sm"
                         >
-                            {aiLoading ? '...' : 'Yorumla'}
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${user.avatarColor}`}>
+                                {user.firstName[0]}{user.lastName[0]}
+                            </div>
+                            <div className="flex-1 text-left">
+                                <div className="font-bold text-gray-900">{user.firstName} {user.lastName}</div>
+                                <div className="text-xs text-gray-500">{user.role}</div>
+                            </div>
+                            <ChevronRight className="w-5 h-5 text-gray-300" />
                         </button>
-                        <button 
-                             onClick={() => handleGenerateAi('python')}
-                             disabled={aiLoading}
-                             className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg transition text-xs font-medium flex items-center gap-1"
-                        >
-                            <Code className="w-3 h-3" /> Python
-                        </button>
-                    </div>
-                    {aiInsight && (
-                        <div className="mt-3 text-xs bg-black/20 p-2 rounded leading-relaxed animate-fade-in">
-                            {aiInsight}
-                        </div>
-                    )}
-                     {pythonCode && (
-                        <div className="mt-3">
-                             <button onClick={() => navigator.clipboard.writeText(pythonCode)} className="text-[10px] bg-white text-indigo-900 px-2 py-1 rounded mb-1">Kopyala</button>
-                             <pre className="text-[10px] bg-black/40 p-2 rounded overflow-x-auto max-h-32 text-green-300 font-mono">
-                                {pythonCode}
-                            </pre>
-                        </div>
-                    )}
-                </div>
-                <Sparkles className="absolute -bottom-4 -right-4 w-24 h-24 text-white/10" />
-            </div>
-
-            {/* History Log */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                <div className="bg-gray-50 px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-                    <History className="w-4 h-4 text-gray-500" />
-                    <h3 className="font-bold text-gray-700 text-sm">Son Hareketler (Limitli)</h3>
-                </div>
-                <div className="divide-y divide-gray-100">
-                    {logs.map(log => (
-                        <div key={log.id} className="p-4 flex justify-between items-center hover:bg-gray-50 transition">
-                             <div>
-                                 <div className={`text-sm font-bold ${log.type === 'Giriş' ? 'text-emerald-700' : 'text-red-600'}`}>
-                                     {log.type.toUpperCase()}
-                                 </div>
-                                 <div className="text-xs text-gray-400">{formatDate(log.timestamp)}</div>
-                             </div>
-                             <div className="text-lg font-mono text-gray-600 font-medium">
-                                 {formatTime(log.timestamp)}
-                             </div>
-                        </div>
                     ))}
-                    {logs.length === 0 && (
-                        <div className="p-6 text-center text-sm text-gray-400">
-                           {logs.length === 0 ? 'Veri yok' : 'Yükleniyor...'}
-                        </div>
-                    )}
                 </div>
+
+                <button onClick={() => setSubView('register')} className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition flex items-center justify-center gap-2">
+                    <UserPlus className="w-5 h-5" /> Listede Yokum, Kayıt Ol
+                </button>
             </div>
+        );
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans text-gray-800">
+        <Header currentUser={currentUser} />
+        
+        {/* Desktop Layout Wrapper (Center Content) */}
+        <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6">
+            {renderContent()}
         </main>
+
+        <BottomNav currentView={mainTab} onChange={setMainTab} />
     </div>
   );
 };

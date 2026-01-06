@@ -10,6 +10,15 @@ export interface PlanRecord {
   description?: string;
 }
 
+export interface WeeklyPlan {
+  id: string;
+  userId: string;
+  fullName: string;
+  date: string; // ISO String YYYY-MM-DD
+  type: 'Ofis' | 'İzin' | 'Okul';
+  note?: string;
+}
+
 export interface UserProfile {
   id: string; // Firestore Doc ID
   firstName: string;
