@@ -1,635 +1,406 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
-import { StatsCards } from './components/StatsCards';
-import { AttendanceRecord, PlanRecord, RecordType, UserStats, UserProfile } from './types';
+import { UserProfile, AttendanceRecord } from './types';
+import { fetchAllUsers, createUserProfile, logAction, fetchUserLogs } from './services/firebaseService';
 import { getAttendanceInsight, generatePythonAnalysisCode } from './services/geminiService';
 import { 
-  PlusCircle, 
-  Trash2, 
-  Calendar, 
+  Users, 
+  UserPlus, 
+  LogIn, 
+  LogOut, 
+  History, 
   Sparkles, 
-  ArrowRight,
-  ClipboardList,
-  AlertCircle,
   Code,
-  UserPlus,
   Briefcase,
+  UserCheck,
   ChevronRight,
-  UserCheck
+  RefreshCw,
+  LayoutDashboard
 } from 'lucide-react';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  Cell
-} from 'recharts';
+import { Timestamp } from 'firebase/firestore';
 
 const App: React.FC = () => {
-  // --- Global Data State ---
-  // In a real app, this would be fetched from a database. 
-  // For this demo, we initialize with empty or localStorage could be used.
-  const [profiles, setProfiles] = useState<UserProfile[]>([]);
-  const [allRecords, setAllRecords] = useState<AttendanceRecord[]>([]);
-  const [allPlans, setAllPlans] = useState<PlanRecord[]>([]);
+  // --- View States ---
+  const [view, setView] = useState<'dashboard' | 'select-user' | 'register' | 'intern-panel'>('dashboard');
   
-  // --- UI State ---
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'log' | 'plan'>('log');
-  const [viewMode, setViewMode] = useState<'login' | 'register'>('login');
+  // --- Data States ---
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [logs, setLogs] = useState<AttendanceRecord[]>([]);
   
-  // --- Form States ---
-  const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [hours, setHours] = useState<number>(8);
-  const [type, setType] = useState<RecordType>(RecordType.WORK);
-  const [desc, setDesc] = useState<string>('');
-  
-  const [planDate, setPlanDate] = useState<string>('');
-  const [planHours, setPlanHours] = useState<number>(8);
-  const [planDesc, setPlanDesc] = useState<string>('');
+  // --- UI Loading States ---
+  const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
-  // --- AI State ---
-  const [aiInsight, setAiInsight] = useState<string>('');
-  const [pythonCode, setPythonCode] = useState<string>('');
-  const [loadingAi, setLoadingAi] = useState<boolean>(false);
-
-  // --- Registration Form State ---
+  // --- Registration State ---
   const [newProfile, setNewProfile] = useState<Partial<UserProfile>>({
     role: 'Stajyer',
     department: 'Yazılım'
   });
 
-  // --- Derived Data ---
-  const currentUser = useMemo(() => 
-    profiles.find(p => p.id === currentUserId) || null
-  , [profiles, currentUserId]);
+  // --- AI States ---
+  const [aiInsight, setAiInsight] = useState('');
+  const [pythonCode, setPythonCode] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
 
-  const currentRecords = useMemo(() => 
-    allRecords.filter(r => r.userId === currentUserId)
-  , [allRecords, currentUserId]);
-
-  const currentPlans = useMemo(() => 
-    allPlans.filter(p => p.userId === currentUserId)
-  , [allPlans, currentUserId]);
-
-  const stats: UserStats = useMemo(() => {
-    return {
-      totalWorkDays: currentRecords.filter(r => r.type === RecordType.WORK).length,
-      totalLeaveDays: currentRecords.filter(r => r.type === RecordType.LEAVE).length,
-      totalWorkHours: currentRecords
-        .filter(r => r.type === RecordType.WORK)
-        .reduce((acc, curr) => acc + curr.hours, 0),
-    };
-  }, [currentRecords]);
-
-  const chartData = useMemo(() => {
-    const sorted = [...currentRecords].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    return sorted.map(r => ({
-      date: new Date(r.date).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' }),
-      hours: r.type === RecordType.WORK ? r.hours : 0,
-      type: r.type
-    })).slice(-7);
-  }, [currentRecords]);
-
-  // --- Reset AI state when switching users ---
+  // Initial Data Load
   useEffect(() => {
-    setAiInsight('');
-    setPythonCode('');
-  }, [currentUserId]);
+    loadUsers();
+  }, []);
 
-  // --- Handlers ---
+  const loadUsers = async () => {
+    setLoading(true);
+    const data = await fetchAllUsers();
+    setUsers(data);
+    setLoading(false);
+  };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleUserSelect = async (user: UserProfile) => {
+    setCurrentUser(user);
+    setView('intern-panel');
+    loadUserLogs(user.id);
+  };
+
+  const loadUserLogs = async (userId: string) => {
+    // Only fetch logs when entering the panel to save costs
+    const data = await fetchUserLogs(userId);
+    setLogs(data);
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newProfile.firstName || !newProfile.lastName) return;
-
-    const profile: UserProfile = {
-      id: Date.now().toString(),
-      firstName: newProfile.firstName,
-      lastName: newProfile.lastName,
-      email: newProfile.email || '',
-      phone: newProfile.phone || '',
-      role: newProfile.role as 'Stajyer' | 'Aday Mühendis',
-      department: newProfile.department || 'Genel',
-      avatarColor: `bg-${['blue', 'indigo', 'purple', 'emerald', 'yellow', 'red'][Math.floor(Math.random()*6)]}-600`
-    };
-
-    setProfiles(prev => [...prev, profile]);
-    setCurrentUserId(profile.id); // Auto login
-    setNewProfile({ role: 'Stajyer', department: 'Yazılım' });
-    setViewMode('login');
+    setLoading(true);
+    const created = await createUserProfile(newProfile);
+    if (created) {
+      setUsers(prev => [...prev, created]);
+      setCurrentUser(created);
+      setView('intern-panel');
+      setNewProfile({ role: 'Stajyer', department: 'Yazılım' });
+    }
+    setLoading(false);
   };
 
-  const handleAddRecord = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUserId) return;
-    const newRecord: AttendanceRecord = {
-      id: Date.now().toString(),
-      userId: currentUserId,
-      date,
-      hours: type === RecordType.LEAVE ? 0 : hours,
-      type,
-      description: desc
-    };
-    setAllRecords(prev => [...prev, newRecord]);
-    setDesc('');
-  };
-
-  const handleAddPlan = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUserId || !planDate) return;
-    const newPlan: PlanRecord = {
-      id: Date.now().toString(),
-      userId: currentUserId,
-      date: planDate,
-      expectedHours: planHours,
-      notes: planDesc
-    };
-    setAllPlans(prev => [...prev, newPlan]);
-    setPlanDesc('');
-  };
-
-  const handleGenerateInsight = async () => {
+  const handleAttendance = async (type: 'Giriş' | 'Çıkış') => {
     if (!currentUser) return;
-    setLoadingAi(true);
-    const insight = await getAttendanceInsight(currentUser, currentRecords, currentPlans);
-    setAiInsight(insight);
-    setLoadingAi(false);
+    setActionLoading(true);
+    
+    const success = await logAction(currentUser, type);
+    
+    if (success) {
+      // Update local state instantly for better UX
+      const now = new Date();
+      const newLog: AttendanceRecord = {
+        id: 'temp-' + Date.now(),
+        userId: currentUser.id,
+        fullName: `${currentUser.firstName} ${currentUser.lastName}`,
+        type: type,
+        timestamp: { seconds: now.getTime() / 1000 } // Mock timestamp for display
+      };
+      
+      setLogs(prev => [newLog, ...prev]);
+      setCurrentUser(prev => prev ? ({...prev, currentStatus: type}) : null);
+      
+      // Refresh user list in background to update dashboard data
+      fetchAllUsers().then(setUsers); 
+    }
+    setActionLoading(false);
   };
 
-  const handleGeneratePython = async () => {
+  const handleGenerateAi = async (type: 'insight' | 'python') => {
     if (!currentUser) return;
-    setLoadingAi(true);
-    const code = await generatePythonAnalysisCode(currentUser, currentRecords);
-    setPythonCode(code);
-    setLoadingAi(false);
+    setAiLoading(true);
+    
+    // Map Firebase logs to the format expected by Gemini Service
+    // Note: Gemini service expects "hours" but our simple logger just has timestamps.
+    // For this demo, we will pass the raw logs and let Gemini try its best, 
+    // or we mock the "hours" based on calculate duration between logs.
+    const mappedLogs: any[] = logs.map(l => ({
+        id: l.id,
+        userId: l.userId,
+        date: new Date((l.timestamp?.seconds || 0) * 1000).toISOString(),
+        type: l.type === 'Giriş' ? 'Çalışma' : 'İzin', // Mapping for AI context
+        hours: 4, // Mocking hours for AI estimation
+        description: l.type
+    }));
+
+    if (type === 'insight') {
+        const text = await getAttendanceInsight(currentUser, mappedLogs, []);
+        setAiInsight(text);
+    } else {
+        const code = await generatePythonAnalysisCode(currentUser, mappedLogs);
+        setPythonCode(code);
+    }
+    setAiLoading(false);
   };
 
-  // --- 1. Login / Register Screen ---
-  if (!currentUserId) {
+  // --- RENDER HELPERS ---
+
+  const formatTime = (timestamp: any) => {
+    if (!timestamp) return '-';
+    // Handle Firebase Timestamp or standard Date
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp.seconds * 1000);
+    return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatDate = (timestamp: any) => {
+    if (!timestamp) return '-';
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp.seconds * 1000);
+    return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' });
+  };
+
+  // --- VIEWS ---
+
+  // 1. DASHBOARD (Manager View)
+  if (view === 'dashboard') {
     return (
-      <div className="min-h-screen bg-slate-50 font-sans text-gray-800 flex flex-col">
+      <div className="min-h-screen bg-slate-50 font-sans text-gray-800">
         <Header />
-        <main className="flex-grow flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-            
-            <div className="bg-blue-900 p-8 text-center">
-               <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-white mb-4">
-                  <Briefcase className="w-8 h-8 text-blue-900" />
-               </div>
-               <h2 className="text-2xl font-bold text-white mb-1">BİLTİR OTEST</h2>
-               <p className="text-blue-200 text-sm">Stajyer & Aday Mühendis Portalı</p>
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="flex justify-between items-center mb-8">
+                <div>
+                    <h2 className="text-2xl font-bold text-blue-900">Genel Durum Paneli</h2>
+                    <p className="text-gray-500 text-sm">Anlık stajyer ve aday mühendis durumları</p>
+                </div>
+                <button 
+                  onClick={() => setView('select-user')}
+                  className="bg-yellow-400 hover:bg-yellow-500 text-blue-900 px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition shadow-sm"
+                >
+                    <Briefcase className="w-5 h-5" />
+                    Stajyer Paneline Git
+                </button>
             </div>
 
-            <div className="p-8">
-               {viewMode === 'login' ? (
-                 <>
-                   <h3 className="text-xl font-bold text-gray-800 mb-6 text-center">Hoş Geldiniz</h3>
-                   {profiles.length > 0 ? (
-                     <div className="space-y-4">
-                       <p className="text-sm text-gray-500 text-center mb-4">Devam etmek için profilinizi seçiniz</p>
-                       <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                         {profiles.map(profile => (
-                           <button
-                             key={profile.id}
-                             onClick={() => setCurrentUserId(profile.id)}
-                             className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition group text-left"
-                           >
-                              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${profile.avatarColor}`}>
-                                {profile.firstName[0]}{profile.lastName[0]}
-                              </div>
-                              <div className="flex-1">
-                                <div className="font-semibold text-gray-900">{profile.firstName} {profile.lastName}</div>
-                                <div className="text-xs text-gray-500">{profile.role}</div>
-                              </div>
-                              <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-blue-500" />
-                           </button>
-                         ))}
-                       </div>
-                       <div className="relative my-6">
-                          <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200"></div></div>
-                          <div className="relative flex justify-center text-sm"><span className="px-2 bg-white text-gray-500">veya</span></div>
-                       </div>
-                     </div>
-                   ) : (
-                     <div className="text-center py-6 text-gray-500">
-                       Henüz kayıtlı profil bulunmuyor.
-                     </div>
-                   )}
-                   
-                   <button 
-                     onClick={() => setViewMode('register')}
-                     className="w-full bg-yellow-400 hover:bg-yellow-500 text-blue-900 font-bold py-3 rounded-xl transition flex items-center justify-center gap-2"
-                   >
-                     <UserPlus className="w-5 h-5" />
-                     Yeni Stajyer Kaydı Oluştur
-                   </button>
-                 </>
-               ) : (
-                 <>
-                    <h3 className="text-xl font-bold text-gray-800 mb-2 text-center">Kayıt Ol</h3>
-                    <p className="text-sm text-gray-500 text-center mb-6">Bilgilerinizi girerek portalı kullanmaya başlayın.</p>
-                    
-                    <form onSubmit={handleRegister} className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-xs font-semibold text-gray-600 uppercase mb-1 block">Ad</label>
-                          <input className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-900 outline-none" value={newProfile.firstName || ''} onChange={e => setNewProfile({...newProfile, firstName: e.target.value})} required placeholder="Adınız" />
+            {loading ? (
+                <div className="flex justify-center py-12"><RefreshCw className="w-8 h-8 text-blue-900 animate-spin" /></div>
+            ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {users.map(user => (
+                        <div key={user.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex items-center gap-4 relative overflow-hidden">
+                            {/* Status Indicator Stripe */}
+                            <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${user.currentStatus === 'Giriş' ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
+                            
+                            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg shrink-0 ${user.avatarColor || 'bg-blue-600'}`}>
+                                {user.firstName[0]}{user.lastName[0]}
+                            </div>
+                            
+                            <div className="flex-1 min-w-0">
+                                <h3 className="font-bold text-gray-900 truncate">{user.firstName} {user.lastName}</h3>
+                                <p className="text-xs text-gray-500 truncate">{user.department} • {user.role}</p>
+                                <div className="flex items-center gap-2 mt-1.5">
+                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                        user.currentStatus === 'Giriş' 
+                                        ? 'bg-emerald-100 text-emerald-700' 
+                                        : 'bg-gray-100 text-gray-600'
+                                    }`}>
+                                        <span className={`w-1.5 h-1.5 rounded-full ${user.currentStatus === 'Giriş' ? 'bg-emerald-500' : 'bg-gray-400'}`}></span>
+                                        {user.currentStatus === 'Giriş' ? 'İçeride' : 'Dışarıda'}
+                                    </span>
+                                    {user.lastSeen && (
+                                        <span className="text-[10px] text-gray-400 flex items-center gap-1">
+                                            <History className="w-3 h-3" />
+                                            {formatTime(user.lastSeen)}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
                         </div>
-                        <div>
-                          <label className="text-xs font-semibold text-gray-600 uppercase mb-1 block">Soyad</label>
-                          <input className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-900 outline-none" value={newProfile.lastName || ''} onChange={e => setNewProfile({...newProfile, lastName: e.target.value})} required placeholder="Soyadınız" />
+                    ))}
+                    {users.length === 0 && (
+                        <div className="col-span-full text-center py-12 text-gray-500">
+                            Henüz kayıtlı stajyer yok.
                         </div>
-                      </div>
-                      <div>
-                        <label className="text-xs font-semibold text-gray-600 uppercase mb-1 block">E-posta</label>
-                        <input className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-900 outline-none" value={newProfile.email || ''} onChange={e => setNewProfile({...newProfile, email: e.target.value})} type="email" placeholder="ornek@email.com" />
-                      </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-xs font-semibold text-gray-600 uppercase mb-1 block">Rol</label>
-                          <select className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-900 outline-none" value={newProfile.role} onChange={e => setNewProfile({...newProfile, role: e.target.value as any})}>
-                            <option value="Stajyer">Stajyer</option>
-                            <option value="Aday Mühendis">Aday Mühendis</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-xs font-semibold text-gray-600 uppercase mb-1 block">Bölüm</label>
-                          <input className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-900 outline-none" value={newProfile.department || ''} onChange={e => setNewProfile({...newProfile, department: e.target.value})} placeholder="Örn: Ar-Ge" />
-                        </div>
-                      </div>
-
-                      <button type="submit" className="w-full bg-blue-900 hover:bg-blue-800 text-white font-bold py-3 rounded-xl transition mt-2">
-                        Kaydı Tamamla
-                      </button>
-                      
-                      <button 
-                        type="button" 
-                        onClick={() => setViewMode('login')}
-                        className="w-full text-gray-500 hover:text-gray-700 font-medium text-sm py-2"
-                      >
-                        Giriş Ekranına Dön
-                      </button>
-                    </form>
-                 </>
-               )}
-            </div>
-          </div>
+                    )}
+                </div>
+            )}
         </main>
       </div>
     );
   }
 
-  // --- 2. Authenticated Intern Portal ---
+  // 2. USER SELECTION (Login)
+  if (view === 'select-user') {
+    return (
+        <div className="min-h-screen bg-slate-50 font-sans text-gray-800 flex flex-col">
+          <Header onBack={() => setView('dashboard')} />
+          <div className="flex-grow flex items-center justify-center p-4">
+            <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+                <div className="bg-blue-900 p-6 text-center">
+                    <h2 className="text-xl font-bold text-white">Kimsin?</h2>
+                    <p className="text-blue-200 text-sm">İşlem yapmak için profilini seç.</p>
+                </div>
+                <div className="p-6">
+                    <div className="max-h-80 overflow-y-auto space-y-2 pr-1 custom-scrollbar mb-4">
+                        {users.map(user => (
+                            <button
+                                key={user.id}
+                                onClick={() => handleUserSelect(user)}
+                                className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition group text-left"
+                            >
+                                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${user.avatarColor}`}>
+                                    {user.firstName[0]}{user.lastName[0]}
+                                </div>
+                                <div className="flex-1">
+                                    <div className="font-semibold text-gray-900">{user.firstName} {user.lastName}</div>
+                                    <div className="text-xs text-gray-500">{user.role}</div>
+                                </div>
+                                <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-blue-500" />
+                            </button>
+                        ))}
+                    </div>
+                    <button 
+                        onClick={() => setView('register')}
+                        className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition flex items-center justify-center gap-2"
+                    >
+                        <UserPlus className="w-5 h-5" />
+                        Listede Yokum, Kayıt Ol
+                    </button>
+                </div>
+            </div>
+          </div>
+        </div>
+    );
+  }
+
+  // 3. REGISTER
+  if (view === 'register') {
+      return (
+        <div className="min-h-screen bg-slate-50 font-sans text-gray-800 flex flex-col">
+            <Header onBack={() => setView('select-user')} />
+            <div className="flex-grow flex items-center justify-center p-4">
+                <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-gray-100 p-8">
+                    <h2 className="text-xl font-bold text-gray-900 mb-6 text-center">Yeni Profil Oluştur</h2>
+                    <form onSubmit={handleRegister} className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                            <input className="border p-3 rounded-lg w-full outline-none focus:border-blue-500" placeholder="Ad" value={newProfile.firstName || ''} onChange={e => setNewProfile({...newProfile, firstName: e.target.value})} required />
+                            <input className="border p-3 rounded-lg w-full outline-none focus:border-blue-500" placeholder="Soyad" value={newProfile.lastName || ''} onChange={e => setNewProfile({...newProfile, lastName: e.target.value})} required />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <select className="border p-3 rounded-lg w-full bg-white" value={newProfile.role} onChange={e => setNewProfile({...newProfile, role: e.target.value as any})}>
+                                <option>Stajyer</option>
+                                <option>Aday Mühendis</option>
+                            </select>
+                            <input className="border p-3 rounded-lg w-full outline-none focus:border-blue-500" placeholder="Bölüm (Örn: Ar-Ge)" value={newProfile.department || ''} onChange={e => setNewProfile({...newProfile, department: e.target.value})} />
+                        </div>
+                        <button disabled={loading} type="submit" className="w-full bg-blue-900 hover:bg-blue-800 text-white font-bold py-3 rounded-xl transition mt-2 disabled:opacity-50">
+                            {loading ? 'Kaydediliyor...' : 'Kaydı Tamamla'}
+                        </button>
+                        <button type="button" onClick={() => setView('select-user')} className="w-full text-gray-500 py-2 text-sm">İptal</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+      );
+  }
+
+  // 4. INTERN PANEL (Personal)
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-gray-800">
-      <Header currentUser={currentUser} onBack={() => setCurrentUserId(null)} />
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <Header currentUser={currentUser} onBack={() => { setCurrentUser(null); setView('dashboard'); setLogs([]); setAiInsight(''); setPythonCode(''); }} />
         
-        <div className="mb-8">
-           <h2 className="text-2xl font-bold text-gray-900">Hoş Geldin, {currentUser?.firstName}!</h2>
-           <p className="text-gray-500">Kendi staj verilerini buradan yönetebilir ve takip edebilirsin.</p>
-        </div>
+        <main className="max-w-md mx-auto px-4 py-8 pb-20">
+            {/* Status Card */}
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 mb-6 text-center">
+                <div className="mb-2 text-sm text-gray-500">Şu anki Durumun</div>
+                <div className={`text-3xl font-bold mb-6 ${currentUser?.currentStatus === 'Giriş' ? 'text-emerald-600' : 'text-gray-400'}`}>
+                    {currentUser?.currentStatus === 'Giriş' ? 'OFİSTESİN' : 'DIŞARIDASIN'}
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                    <button
+                        onClick={() => handleAttendance('Giriş')}
+                        disabled={actionLoading || currentUser?.currentStatus === 'Giriş'}
+                        className={`py-4 rounded-xl flex flex-col items-center justify-center gap-2 transition border-2 ${
+                            currentUser?.currentStatus === 'Giriş' 
+                            ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' 
+                            : 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300 shadow-sm'
+                        }`}
+                    >
+                        <LogIn className="w-8 h-8" />
+                        <span className="font-bold">Giriş Yap</span>
+                    </button>
 
-        {/* Statistics Section */}
-        <StatsCards stats={stats} />
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Left Column: Input Forms & AI */}
-          <div className="lg:col-span-1 space-y-6">
-            
-            {/* Tab Switcher */}
-            <div className="bg-white rounded-xl shadow-sm p-1 border border-gray-200 flex">
-              <button
-                onClick={() => setActiveTab('log')}
-                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${
-                  activeTab === 'log' 
-                    ? 'bg-blue-900 text-white shadow-sm' 
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                Giriş Ekle
-              </button>
-              <button
-                onClick={() => setActiveTab('plan')}
-                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${
-                  activeTab === 'plan' 
-                    ? 'bg-yellow-400 text-blue-900 shadow-sm' 
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                Planlama Yap
-              </button>
+                    <button
+                        onClick={() => handleAttendance('Çıkış')}
+                        disabled={actionLoading || currentUser?.currentStatus !== 'Giriş'}
+                        className={`py-4 rounded-xl flex flex-col items-center justify-center gap-2 transition border-2 ${
+                            currentUser?.currentStatus !== 'Giriş' 
+                            ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' 
+                            : 'bg-red-50 border-red-100 text-red-700 hover:bg-red-100 hover:border-red-300 shadow-sm'
+                        }`}
+                    >
+                        <LogOut className="w-8 h-8" />
+                        <span className="font-bold">Çıkış Yap</span>
+                    </button>
+                </div>
             </div>
 
-            {/* Input Form */}
-            <div className="bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden">
-              <div className={`h-1.5 w-full ${activeTab === 'log' ? 'bg-blue-900' : 'bg-yellow-400'}`}></div>
-              <div className="p-6">
-                <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                  {activeTab === 'log' ? (
-                    <><Calendar className="w-5 h-5 text-blue-900" /> Bugün Ne Yaptın?</>
-                  ) : (
-                    <><ClipboardList className="w-5 h-5 text-yellow-600" /> Gelecek Planın Ne?</>
-                  )}
-                </h2>
-
-                {activeTab === 'log' ? (
-                  <form onSubmit={handleAddRecord} className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Tarih</label>
-                      <input 
-                        type="date" 
-                        required
-                        value={date}
-                        onChange={(e) => setDate(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-900 focus:border-transparent outline-none transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Durum</label>
-                      <select 
-                        value={type}
-                        onChange={(e) => setType(e.target.value as RecordType)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-900 focus:border-transparent outline-none transition"
-                      >
-                        <option value={RecordType.WORK}>Çalışma (Ofis/Uzaktan)</option>
-                        <option value={RecordType.LEAVE}>İzin / Rapor</option>
-                      </select>
-                    </div>
-                    {type === RecordType.WORK && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Çalışılan Saat</label>
-                        <input 
-                          type="number" 
-                          min="0" 
-                          max="24"
-                          step="0.5"
-                          value={hours}
-                          onChange={(e) => setHours(Number(e.target.value))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-900 focus:border-transparent outline-none transition"
-                        />
-                      </div>
-                    )}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Kısa Açıklama</label>
-                      <input 
-                        type="text" 
-                        placeholder="Örn: Proje toplantısı, literatür taraması..."
-                        value={desc}
-                        onChange={(e) => setDesc(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-900 focus:border-transparent outline-none transition"
-                      />
-                    </div>
-                    <button type="submit" className="w-full bg-blue-900 hover:bg-blue-800 text-white font-medium py-2.5 rounded-lg transition flex items-center justify-center gap-2 mt-2">
-                      <PlusCircle className="w-5 h-5" /> Kaydı Ekle
-                    </button>
-                  </form>
-                ) : (
-                  <form onSubmit={handleAddPlan} className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Ne Zaman Geleceksin?</label>
-                      <input 
-                        type="date" 
-                        required
-                        min={new Date().toISOString().split('T')[0]}
-                        value={planDate}
-                        onChange={(e) => setPlanDate(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-yellow-400 focus:border-transparent outline-none transition"
-                      />
-                    </div>
-                    <div>
-                       <label className="block text-sm font-medium text-gray-700 mb-1">Tahmini Süre (Saat)</label>
-                        <input 
-                          type="number" 
-                          min="0" 
-                          max="24"
-                          step="0.5"
-                          value={planHours}
-                          onChange={(e) => setPlanHours(Number(e.target.value))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-yellow-400 focus:border-transparent outline-none transition"
-                        />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Planlanan İş (Opsiyonel)</label>
-                      <input 
-                        type="text" 
-                        placeholder="Örn: Tasarım bitirilecek"
-                        value={planDesc}
-                        onChange={(e) => setPlanDesc(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-yellow-400 focus:border-transparent outline-none transition"
-                      />
-                    </div>
-                    <button type="submit" className="w-full bg-yellow-400 hover:bg-yellow-500 text-blue-900 font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2 mt-2">
-                      <PlusCircle className="w-5 h-5" /> Planımı Kaydet
-                    </button>
-                  </form>
-                )}
-              </div>
-            </div>
-
-            {/* AI Insight & Python Box */}
-            <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl p-6 border border-indigo-100 relative overflow-hidden">
-               <div className="absolute top-0 right-0 p-4 opacity-10">
-                 <Sparkles className="w-24 h-24 text-indigo-500" />
-               </div>
-               <div className="relative z-10">
-                  <h3 className="text-indigo-900 font-bold flex items-center gap-2 mb-2">
-                    <Sparkles className="w-5 h-5 text-indigo-600" />
-                    Kariyer Mentörü
-                  </h3>
-                  
-                  {aiInsight ? (
-                    <div className="bg-white/60 p-3 rounded-lg text-sm text-indigo-900 border border-indigo-100 mb-3 animate-fade-in">
-                      {aiInsight}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-indigo-700 mb-4">
-                      Staj performansını yapay zeka ile analiz et ve tavsiyeler al.
-                    </p>
-                  )}
-
-                  {pythonCode && (
-                    <div className="mb-3">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-xs font-bold text-indigo-800">Senin için Python Kodu:</span>
+            {/* AI Assistant Mini */}
+            <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl p-5 text-white mb-6 shadow-md relative overflow-hidden">
+                <div className="relative z-10">
+                    <h3 className="font-bold flex items-center gap-2 mb-2">
+                        <Sparkles className="w-5 h-5 text-yellow-300" />
+                        AI Mentör
+                    </h3>
+                    <div className="flex gap-2 text-sm">
                         <button 
-                          onClick={() => {navigator.clipboard.writeText(pythonCode); alert('Kopyalandı!');}} 
-                          className="text-xs bg-indigo-200 hover:bg-indigo-300 px-2 py-1 rounded text-indigo-800"
+                            onClick={() => handleGenerateAi('insight')}
+                            disabled={aiLoading}
+                            className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg transition text-xs font-medium"
                         >
-                          Kopyala
+                            Yorumla
                         </button>
-                      </div>
-                      <pre className="bg-gray-800 text-green-400 p-3 rounded-lg text-xs overflow-x-auto max-h-40">
-                        {pythonCode}
-                      </pre>
+                        <button 
+                             onClick={() => handleGenerateAi('python')}
+                             disabled={aiLoading}
+                             className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg transition text-xs font-medium flex items-center gap-1"
+                        >
+                            <Code className="w-3 h-3" /> Python
+                        </button>
                     </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button 
-                      onClick={handleGenerateInsight}
-                      disabled={loadingAi || currentRecords.length === 0}
-                      className="bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50 font-medium py-2 rounded-lg text-xs transition disabled:opacity-50 flex justify-center items-center gap-1"
-                    >
-                      <Sparkles className="w-4 h-4" /> Mentör Tavsiyesi
-                    </button>
-                    <button 
-                      onClick={handleGeneratePython}
-                      disabled={loadingAi || currentRecords.length === 0}
-                      className="bg-gray-800 text-green-400 border border-gray-700 hover:bg-gray-700 font-medium py-2 rounded-lg text-xs transition disabled:opacity-50 flex justify-center items-center gap-1"
-                    >
-                      <Code className="w-4 h-4" /> Python Kodu
-                    </button>
-                  </div>
-               </div>
-            </div>
-          </div>
-
-          {/* Right Column: Lists and Charts */}
-          <div className="lg:col-span-2 space-y-8">
-            
-            {/* Chart Section */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-               <h3 className="text-lg font-bold text-gray-800 mb-6">Haftalık Performansım</h3>
-               {currentRecords.length > 0 ? (
-                 <div className="h-64 w-full">
-                   <ResponsiveContainer width="100%" height="100%">
-                     <BarChart data={chartData}>
-                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                       <XAxis dataKey="date" tick={{fontSize: 12, fill: '#6b7280'}} axisLine={false} tickLine={false} />
-                       <YAxis tick={{fontSize: 12, fill: '#6b7280'}} axisLine={false} tickLine={false} />
-                       <Tooltip 
-                          contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'}}
-                          cursor={{fill: '#f3f4f6'}}
-                       />
-                       <Bar dataKey="hours" radius={[4, 4, 0, 0]}>
-                         {chartData.map((entry, index) => (
-                           <Cell key={`cell-${index}`} fill={entry.type === RecordType.WORK ? '#1e3a8a' : '#facc15'} />
-                         ))}
-                       </Bar>
-                     </BarChart>
-                   </ResponsiveContainer>
-                 </div>
-               ) : (
-                 <div className="h-64 flex flex-col items-center justify-center text-gray-400 bg-gray-50 rounded-lg border border-dashed border-gray-200">
-                   <BarChart className="w-12 h-12 mb-2 opacity-50" />
-                   <p>Henüz veri girmedin.</p>
-                 </div>
-               )}
+                    {aiInsight && (
+                        <div className="mt-3 text-xs bg-black/20 p-2 rounded leading-relaxed animate-fade-in">
+                            {aiInsight}
+                        </div>
+                    )}
+                     {pythonCode && (
+                        <div className="mt-3">
+                             <button onClick={() => navigator.clipboard.writeText(pythonCode)} className="text-[10px] bg-white text-indigo-900 px-2 py-1 rounded mb-1">Kopyala</button>
+                             <pre className="text-[10px] bg-black/40 p-2 rounded overflow-x-auto max-h-32 text-green-300 font-mono">
+                                {pythonCode}
+                            </pre>
+                        </div>
+                    )}
+                </div>
+                <Sparkles className="absolute -bottom-4 -right-4 w-24 h-24 text-white/10" />
             </div>
 
-            {/* Attendance History List */}
+            {/* History Log */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-               <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-                 <h3 className="font-bold text-gray-800">Geçmiş Kayıtlarım</h3>
-                 <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-md">{currentRecords.length} Kayıt</span>
-               </div>
-               
-               {currentRecords.length === 0 ? (
-                 <div className="p-8 text-center text-gray-500">
-                    Henüz bir kayıt oluşturmadın.
-                 </div>
-               ) : (
-                 <div className="max-h-96 overflow-y-auto">
-                   <table className="w-full text-left text-sm">
-                     <thead className="bg-gray-50 text-gray-500 font-medium sticky top-0">
-                       <tr>
-                         <th className="px-6 py-3">Tarih</th>
-                         <th className="px-6 py-3">Durum</th>
-                         <th className="px-6 py-3">Süre</th>
-                         <th className="px-6 py-3">Açıklama</th>
-                         <th className="px-6 py-3 text-right">Sil</th>
-                       </tr>
-                     </thead>
-                     <tbody className="divide-y divide-gray-100">
-                       {currentRecords.slice().reverse().map((record) => (
-                         <tr key={record.id} className="hover:bg-gray-50/50 transition">
-                           <td className="px-6 py-3 font-medium text-gray-900">
-                             {new Date(record.date).toLocaleDateString('tr-TR')}
-                           </td>
-                           <td className="px-6 py-3">
-                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                               record.type === RecordType.WORK 
-                                ? 'bg-blue-100 text-blue-800'
-                                : 'bg-yellow-100 text-yellow-800'
-                             }`}>
-                               {record.type}
-                             </span>
-                           </td>
-                           <td className="px-6 py-3 text-gray-600">
-                             {record.type === RecordType.WORK ? `${record.hours} sa` : '-'}
-                           </td>
-                           <td className="px-6 py-3 text-gray-500 truncate max-w-xs">
-                             {record.description || '-'}
-                           </td>
-                           <td className="px-6 py-3 text-right">
-                             <button 
-                                onClick={() => setAllRecords(prev => prev.filter(r => r.id !== record.id))}
-                                className="text-red-400 hover:text-red-600 transition p-1"
-                                title="Kaydı Sil"
-                             >
-                               <Trash2 className="w-4 h-4" />
-                             </button>
-                           </td>
-                         </tr>
-                       ))}
-                     </tbody>
-                   </table>
-                 </div>
-               )}
-            </div>
-
-            {/* Future Plans List */}
-            {currentPlans.length > 0 && (
-              <div className="bg-yellow-50 rounded-xl border border-yellow-100 overflow-hidden">
-                <div className="px-6 py-4 border-b border-yellow-100 flex items-center gap-2">
-                  <ArrowRight className="w-5 h-5 text-yellow-700" />
-                  <h3 className="font-bold text-yellow-800">Gelecek Planlarım</h3>
+                <div className="bg-gray-50 px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+                    <History className="w-4 h-4 text-gray-500" />
+                    <h3 className="font-bold text-gray-700 text-sm">Son Hareketler (Limitli)</h3>
                 </div>
-                <div className="divide-y divide-yellow-100/50">
-                  {currentPlans.map((plan) => (
-                    <div key={plan.id} className="px-6 py-4 flex items-center justify-between hover:bg-yellow-100/20 transition">
-                       <div className="flex items-center gap-4">
-                         <div className="bg-white p-2 rounded-lg border border-yellow-200 text-center min-w-[3.5rem]">
-                            <div className="text-xs text-gray-500 uppercase">{new Date(plan.date).toLocaleDateString('tr-TR', {month: 'short'})}</div>
-                            <div className="text-lg font-bold text-blue-900">{new Date(plan.date).getDate()}</div>
-                         </div>
-                         <div>
-                           <div className="text-yellow-900 font-medium">Ofiste Çalışma ({plan.expectedHours} saat)</div>
-                           <div className="text-yellow-700/80 text-sm">{plan.notes || 'Not yok'}</div>
-                         </div>
-                       </div>
-                       <button 
-                          onClick={() => setAllPlans(prev => prev.filter(p => p.id !== plan.id))}
-                          className="text-yellow-600 hover:text-red-500 transition"
-                          title="Planı İptal Et"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                    </div>
-                  ))}
+                <div className="divide-y divide-gray-100">
+                    {logs.map(log => (
+                        <div key={log.id} className="p-4 flex justify-between items-center hover:bg-gray-50 transition">
+                             <div>
+                                 <div className={`text-sm font-bold ${log.type === 'Giriş' ? 'text-emerald-700' : 'text-red-600'}`}>
+                                     {log.type.toUpperCase()}
+                                 </div>
+                                 <div className="text-xs text-gray-400">{formatDate(log.timestamp)}</div>
+                             </div>
+                             <div className="text-lg font-mono text-gray-600 font-medium">
+                                 {formatTime(log.timestamp)}
+                             </div>
+                        </div>
+                    ))}
+                    {logs.length === 0 && (
+                        <div className="p-6 text-center text-sm text-gray-400">Henüz kayıt yok.</div>
+                    )}
                 </div>
-              </div>
-            )}
-            
-            {/* Info Footer */}
-            <div className="bg-blue-50 rounded-lg p-4 flex gap-3 items-start border border-blue-100">
-               <AlertCircle className="w-5 h-5 text-blue-700 shrink-0 mt-0.5" />
-               <div className="text-sm text-blue-800">
-                 <p className="font-semibold mb-1">Bilgilendirme</p>
-                 <p>Girdiğin kayıtlar haftalık olarak İK departmanına iletilmektedir. Eksik günlerini Cuma gününe kadar tamamlamayı unutma.</p>
-               </div>
             </div>
-
-          </div>
-        </div>
-      </main>
+        </main>
     </div>
   );
 };

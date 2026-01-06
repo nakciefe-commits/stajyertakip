@@ -14,8 +14,9 @@ export const getAttendanceInsight = async (
   }
 
   try {
-    const workRecords = records.filter(r => r.type === RecordType.WORK);
-    const totalHours = workRecords.reduce((acc, curr) => acc + curr.hours, 0);
+    // Handle both original 'Giriş' type and mapped 'Çalışma' type
+    const workRecords = records.filter(r => r.type === RecordType.WORK || r.type === 'Çalışma');
+    const totalHours = workRecords.reduce((acc, curr) => acc + (curr.hours || 0), 0);
 
     // Prompt updated to address the intern directly (You/Sen) instead of HR (He/O)
     const prompt = `
@@ -51,10 +52,10 @@ export const generatePythonAnalysisCode = async (
 
   try {
     const data = records.map(r => ({
-      date: r.date,
-      hours: r.hours,
+      date: r.date || new Date((r.timestamp?.seconds || 0) * 1000).toISOString(),
+      hours: r.hours || 0,
       type: r.type,
-      description: r.description
+      description: r.description || ''
     }));
 
     const prompt = `
