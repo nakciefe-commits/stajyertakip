@@ -3,6 +3,8 @@ import { Header } from './components/Header';
 import { UserProfile, AttendanceRecord } from './types';
 import { fetchAllUsers, createUserProfile, logAction, fetchUserLogs } from './services/firebaseService';
 import { getAttendanceInsight, generatePythonAnalysisCode } from './services/geminiService';
+import { auth } from './firebase';
+import { signInAnonymously } from "firebase/auth";
 import { 
   Users, 
   UserPlus, 
@@ -15,9 +17,9 @@ import {
   UserCheck,
   ChevronRight,
   RefreshCw,
-  LayoutDashboard
+  LayoutDashboard,
+  WifiOff
 } from 'lucide-react';
-import { Timestamp } from 'firebase/firestore';
 
 const App: React.FC = () => {
   // --- View States ---
@@ -29,8 +31,9 @@ const App: React.FC = () => {
   const [logs, setLogs] = useState<AttendanceRecord[]>([]);
   
   // --- UI Loading States ---
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // Initial load is true
   const [actionLoading, setActionLoading] = useState(false);
+  const [networkError, setNetworkError] = useState(false);
 
   // --- Registration State ---
   const [newProfile, setNewProfile] = useState<Partial<UserProfile>>({
@@ -43,26 +46,46 @@ const App: React.FC = () => {
   const [pythonCode, setPythonCode] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
 
-  // Initial Data Load
+  // Initial Data Load with Anonymous Auth
   useEffect(() => {
-    loadUsers();
+    const initApp = async () => {
+      try {
+        // 1. Authenticate anonymously first (Prevents Firestore hanging)
+        await signInAnonymously(auth);
+        
+        // 2. Then load data
+        await loadUsers();
+      } catch (error) {
+        console.error("Initialization error:", error);
+        setNetworkError(true);
+        setLoading(false);
+      }
+    };
+    initApp();
   }, []);
 
   const loadUsers = async () => {
     setLoading(true);
-    const data = await fetchAllUsers();
-    setUsers(data);
-    setLoading(false);
+    setNetworkError(false);
+    try {
+      const data = await fetchAllUsers();
+      setUsers(data);
+    } catch (e) {
+      console.error("Load users error:", e);
+      setNetworkError(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleUserSelect = async (user: UserProfile) => {
     setCurrentUser(user);
     setView('intern-panel');
+    // Don't await this, let it load in background for speed
     loadUserLogs(user.id);
   };
 
   const loadUserLogs = async (userId: string) => {
-    // Only fetch logs when entering the panel to save costs
     const data = await fetchUserLogs(userId);
     setLogs(data);
   };
@@ -70,7 +93,7 @@ const App: React.FC = () => {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newProfile.firstName || !newProfile.lastName) return;
-    setLoading(true);
+    setActionLoading(true);
     const created = await createUserProfile(newProfile);
     if (created) {
       setUsers(prev => [...prev, created]);
@@ -78,31 +101,38 @@ const App: React.FC = () => {
       setView('intern-panel');
       setNewProfile({ role: 'Stajyer', department: 'Yazılım' });
     }
-    setLoading(false);
+    setActionLoading(false);
   };
 
   const handleAttendance = async (type: 'Giriş' | 'Çıkış') => {
     if (!currentUser) return;
     setActionLoading(true);
     
+    // Optimistic Update (Immediate UI change)
+    const previousStatus = currentUser.currentStatus;
+    const now = new Date();
+    
+    // Temporarily update UI before server responds
+    setCurrentUser(prev => prev ? ({...prev, currentStatus: type}) : null);
+    
     const success = await logAction(currentUser, type);
     
     if (success) {
-      // Update local state instantly for better UX
-      const now = new Date();
       const newLog: AttendanceRecord = {
         id: 'temp-' + Date.now(),
         userId: currentUser.id,
         fullName: `${currentUser.firstName} ${currentUser.lastName}`,
         type: type,
-        timestamp: { seconds: now.getTime() / 1000 } // Mock timestamp for display
+        timestamp: { seconds: now.getTime() / 1000 }
       };
       
       setLogs(prev => [newLog, ...prev]);
-      setCurrentUser(prev => prev ? ({...prev, currentStatus: type}) : null);
-      
-      // Refresh user list in background to update dashboard data
+      // Background refresh to sync consistency
       fetchAllUsers().then(setUsers); 
+    } else {
+      // Revert on failure
+      setCurrentUser(prev => prev ? ({...prev, currentStatus: previousStatus}) : null);
+      alert("Bağlantı hatası, işlem kaydedilemedi.");
     }
     setActionLoading(false);
   };
@@ -111,16 +141,12 @@ const App: React.FC = () => {
     if (!currentUser) return;
     setAiLoading(true);
     
-    // Map Firebase logs to the format expected by Gemini Service
-    // Note: Gemini service expects "hours" but our simple logger just has timestamps.
-    // For this demo, we will pass the raw logs and let Gemini try its best, 
-    // or we mock the "hours" based on calculate duration between logs.
     const mappedLogs: any[] = logs.map(l => ({
         id: l.id,
         userId: l.userId,
         date: new Date((l.timestamp?.seconds || 0) * 1000).toISOString(),
-        type: l.type === 'Giriş' ? 'Çalışma' : 'İzin', // Mapping for AI context
-        hours: 4, // Mocking hours for AI estimation
+        type: l.type === 'Giriş' ? 'Çalışma' : 'İzin',
+        hours: 4, 
         description: l.type
     }));
 
@@ -138,7 +164,6 @@ const App: React.FC = () => {
 
   const formatTime = (timestamp: any) => {
     if (!timestamp) return '-';
-    // Handle Firebase Timestamp or standard Date
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp.seconds * 1000);
     return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
   };
@@ -171,13 +196,22 @@ const App: React.FC = () => {
                 </button>
             </div>
 
-            {loading ? (
-                <div className="flex justify-center py-12"><RefreshCw className="w-8 h-8 text-blue-900 animate-spin" /></div>
+            {networkError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-lg mb-6 flex items-center gap-2">
+                <WifiOff className="w-5 h-5" />
+                <span>Bağlantı kurulamadı. İnternetinizi kontrol edip sayfayı yenileyin.</span>
+              </div>
+            )}
+
+            {loading && users.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 gap-3">
+                  <RefreshCw className="w-8 h-8 text-blue-900 animate-spin" />
+                  <p className="text-gray-400 text-sm">Veriler çekiliyor...</p>
+                </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {users.map(user => (
                         <div key={user.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex items-center gap-4 relative overflow-hidden">
-                            {/* Status Indicator Stripe */}
                             <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${user.currentStatus === 'Giriş' ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
                             
                             <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg shrink-0 ${user.avatarColor || 'bg-blue-600'}`}>
@@ -206,9 +240,9 @@ const App: React.FC = () => {
                             </div>
                         </div>
                     ))}
-                    {users.length === 0 && (
-                        <div className="col-span-full text-center py-12 text-gray-500">
-                            Henüz kayıtlı stajyer yok.
+                    {users.length === 0 && !loading && (
+                        <div className="col-span-full text-center py-12 text-gray-500 bg-gray-50 rounded-lg border-2 border-dashed">
+                            Henüz kayıtlı stajyer yok. Stajyer Paneline gidip kayıt olabilirsiniz.
                         </div>
                     )}
                 </div>
@@ -230,24 +264,28 @@ const App: React.FC = () => {
                     <p className="text-blue-200 text-sm">İşlem yapmak için profilini seç.</p>
                 </div>
                 <div className="p-6">
-                    <div className="max-h-80 overflow-y-auto space-y-2 pr-1 custom-scrollbar mb-4">
-                        {users.map(user => (
-                            <button
-                                key={user.id}
-                                onClick={() => handleUserSelect(user)}
-                                className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition group text-left"
-                            >
-                                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${user.avatarColor}`}>
-                                    {user.firstName[0]}{user.lastName[0]}
-                                </div>
-                                <div className="flex-1">
-                                    <div className="font-semibold text-gray-900">{user.firstName} {user.lastName}</div>
-                                    <div className="text-xs text-gray-500">{user.role}</div>
-                                </div>
-                                <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-blue-500" />
-                            </button>
-                        ))}
-                    </div>
+                    {loading && users.length === 0 ? (
+                       <div className="flex justify-center py-8"><RefreshCw className="w-6 h-6 animate-spin text-blue-900" /></div>
+                    ) : (
+                      <div className="max-h-80 overflow-y-auto space-y-2 pr-1 custom-scrollbar mb-4">
+                          {users.map(user => (
+                              <button
+                                  key={user.id}
+                                  onClick={() => handleUserSelect(user)}
+                                  className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition group text-left"
+                              >
+                                  <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${user.avatarColor}`}>
+                                      {user.firstName[0]}{user.lastName[0]}
+                                  </div>
+                                  <div className="flex-1">
+                                      <div className="font-semibold text-gray-900">{user.firstName} {user.lastName}</div>
+                                      <div className="text-xs text-gray-500">{user.role}</div>
+                                  </div>
+                                  <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-blue-500" />
+                              </button>
+                          ))}
+                      </div>
+                    )}
                     <button 
                         onClick={() => setView('register')}
                         className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition flex items-center justify-center gap-2"
@@ -282,8 +320,8 @@ const App: React.FC = () => {
                             </select>
                             <input className="border p-3 rounded-lg w-full outline-none focus:border-blue-500" placeholder="Bölüm (Örn: Ar-Ge)" value={newProfile.department || ''} onChange={e => setNewProfile({...newProfile, department: e.target.value})} />
                         </div>
-                        <button disabled={loading} type="submit" className="w-full bg-blue-900 hover:bg-blue-800 text-white font-bold py-3 rounded-xl transition mt-2 disabled:opacity-50">
-                            {loading ? 'Kaydediliyor...' : 'Kaydı Tamamla'}
+                        <button disabled={actionLoading} type="submit" className="w-full bg-blue-900 hover:bg-blue-800 text-white font-bold py-3 rounded-xl transition mt-2 disabled:opacity-50">
+                            {actionLoading ? 'Kaydediliyor...' : 'Kaydı Tamamla'}
                         </button>
                         <button type="button" onClick={() => setView('select-user')} className="w-full text-gray-500 py-2 text-sm">İptal</button>
                     </form>
@@ -316,7 +354,7 @@ const App: React.FC = () => {
                             : 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300 shadow-sm'
                         }`}
                     >
-                        <LogIn className="w-8 h-8" />
+                        {actionLoading && currentUser?.currentStatus !== 'Giriş' ? <RefreshCw className="w-8 h-8 animate-spin" /> : <LogIn className="w-8 h-8" />}
                         <span className="font-bold">Giriş Yap</span>
                     </button>
 
@@ -329,7 +367,7 @@ const App: React.FC = () => {
                             : 'bg-red-50 border-red-100 text-red-700 hover:bg-red-100 hover:border-red-300 shadow-sm'
                         }`}
                     >
-                        <LogOut className="w-8 h-8" />
+                         {actionLoading && currentUser?.currentStatus === 'Giriş' ? <RefreshCw className="w-8 h-8 animate-spin" /> : <LogOut className="w-8 h-8" />}
                         <span className="font-bold">Çıkış Yap</span>
                     </button>
                 </div>
@@ -348,7 +386,7 @@ const App: React.FC = () => {
                             disabled={aiLoading}
                             className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg transition text-xs font-medium"
                         >
-                            Yorumla
+                            {aiLoading ? '...' : 'Yorumla'}
                         </button>
                         <button 
                              onClick={() => handleGenerateAi('python')}
@@ -396,7 +434,9 @@ const App: React.FC = () => {
                         </div>
                     ))}
                     {logs.length === 0 && (
-                        <div className="p-6 text-center text-sm text-gray-400">Henüz kayıt yok.</div>
+                        <div className="p-6 text-center text-sm text-gray-400">
+                           {logs.length === 0 ? 'Veri yok' : 'Yükleniyor...'}
+                        </div>
                     )}
                 </div>
             </div>

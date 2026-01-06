@@ -16,11 +16,14 @@ import { AttendanceRecord, UserProfile } from "../types";
 
 // --- USERS ---
 
-// Fetches all users. Since the list is small (<50), this is cheap.
-// It also fetches their current status which is stored on the user doc.
+// Fetches all users. Added Limit 50 to prevent huge reads if DB grows.
 export const fetchAllUsers = async (): Promise<UserProfile[]> => {
   try {
-    const q = query(collection(db, "users"), orderBy("firstName"));
+    const q = query(
+        collection(db, "users"), 
+        orderBy("firstName"),
+        limit(50) // QUOTA PROTECTION
+    );
     const snapshot = await getDocs(q);
     return snapshot.docs.map(doc => ({
       id: doc.id,
@@ -28,6 +31,7 @@ export const fetchAllUsers = async (): Promise<UserProfile[]> => {
     } as UserProfile));
   } catch (error) {
     console.error("Error fetching users:", error);
+    // Don't crash, return empty array so UI can show error state
     return [];
   }
 };
@@ -49,8 +53,6 @@ export const createUserProfile = async (user: Partial<UserProfile>): Promise<Use
 
 // --- LOGS ---
 
-// Log Action: Adds a log AND updates the user's status in one go.
-// This allows the main dashboard to update without reading the logs collection.
 export const logAction = async (user: UserProfile, type: 'Giriş' | 'Çıkış') => {
   try {
     // 1. Add to history log
